@@ -151,17 +151,13 @@ class VLMHFModel(BaseLLM):
     ):
         """
         Generate the instruction using a remote language model.
-        This feature is disabled for now.
         :param prompt: A string with the input to the language model.
         :param stop: A string that determines when to stop generation
-        :max_length: The max number of tokens to generate
+        :param max_length: The max number of tokens to generate
         """
         # Generate the response
         if self.generation_params.temperature == 0:
-            # This is to solve a warning/crash that doesn't allow
-            # a model to have temperature 0. When temp is 0, we
-            # set the do_sample parameter to False and set an arbitrary
-            # temp > 0.
+            # Prevent model crash for temperature=0
             self.generation_params.temperature = 0.1
             self.generation_params.do_sample = False
 
@@ -175,66 +171,37 @@ class VLMHFModel(BaseLLM):
             )
 
         def _split_on_stop(
-            text: str, stopper: Optional[Union[str, Iterable[str]]]
+            text: Optional[str], stopper: Optional[Union[str, Iterable[str]]]
         ) -> str:
+            """Safely split generated text on the stop token(s)."""
+            if not isinstance(text, str):
+                return ""
             if not stopper:
                 return text.rstrip()
             if isinstance(stopper, str):
-                return text.split(stopper)[0].rstrip()
+                return text.split(stopper, 1)[0].rstrip()
             try:
                 for s in stopper:
                     if s and s in text:
-                        return text.split(s)[0].rstrip()
+                        return text.split(s, 1)[0].rstrip()
             except TypeError:
-                return text.rstrip()
+                pass
             return text.rstrip()
 
-        if self.generation_params and "start" in self.generation_params:
-            start = self.generation_params["start"]
-        else:
-            start = None
-
-        def _split_on_start(
-            text: str, starter: Optional[Union[str, Iterable[str]]]
-        ) -> Tuple[str, Optional[str]]:
-            """
-            Remove reasoning tag block (if present) and split text on start tokens.
-            Returns (clean_text, reasoning_part)
-            """
-            if not starter:
-                return text.rstrip(), None
-            if isinstance(starter, str):
-                parts = text.split(starter)
-                if len(parts) > 1:
-                    print("[Debug] Splitting on start token:", starter)
-                    print("[Debug] Reasoning part:", parts[0])
-                    print("[Debug] Final answer part:", parts[-1])
-                    return parts[-1].rstrip(), parts[0]
-                else:
-                    return text.rstrip(), None
-            try:
-                for s in starter:
-                    if s and s in text:
-                        return text.split(s)[0].rstrip(), s
-            except TypeError:
-                return text.rstrip(), None
-            return text.rstrip(), None
-
         self.response_raw: Dict[str, Any] = {}
+
+        # Batch generation
         if self.generation_params.batch_response:
             self.batch_response = []
-            # Repeat generation
             for _ in range(self.generation_params.n):
                 self.response_raw = _call_model(prompt)
                 generation = self.response_raw.get("generation", "")
                 generation = _split_on_stop(generation, stop)
-                generation, _ = _split_on_start(generation, start)
                 self.batch_response.append(generation)
         else:
             self.response_raw = _call_model(prompt)
             generation = self.response_raw.get("generation", "")
             generation = _split_on_stop(generation, stop)
-            generation, _ = _split_on_start(generation, start)
             self.response = generation
 
     def get_logprobs(self):

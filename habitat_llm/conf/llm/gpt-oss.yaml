@@ -11,24 +11,32 @@ serverdir     : ""
 # You can choose between "hf" and "rlm" (remote language model)
 inference_mode          : hf
 
-# System, User, Assistant and end of turn tags
-system_tag : "<|start_header_id|>system<|end_header_id|>\n\n"
-user_tag : "<|start_header_id|>user<|end_header_id|>\n\n"
-assistant_tag : "<|start_header_id|>assistant<|end_header_id|>\n\n"
-eot_tag : "<|eot_id|>"
+# https://github.com/openai/harmony
+system_tag: "<|start|>system<|message|>\n\n"
+user_tag: "<|start|>user<|message|>\n\n"
+assistant_tag: "<|start|>assistant<|message|>\n\n"
+eot_tag: "<|end|>"
 
 generation_params:
 
-  engine          : "meta-llama/Llama-3.3-70B-Instruct"
+  engine          : "openai/gpt-oss-120b"
+
+  # chat style request
+  chat            : True
+
 
   # The prompt to start the generation from.
   prompt        : ''
 
   # The maximum number of tokens to generate in the completion.
-  max_tokens    :  8192
+  max_tokens    : 131072
 
   # float , optional, defaults to 1.0) — The value used to modulate the next token probabilities.
   temperature   : 0.0
+
+  # Reasoning effort for reasoning models. null = omit (server default).
+  # Valid values: low, medium, high
+  reasoning_effort: null
 
   # Returns the best `n` out of `best_of` completions made on server side
   n             : 1

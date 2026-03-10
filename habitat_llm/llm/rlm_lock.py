@@ -28,6 +28,26 @@ class RemoteLanguageModel:
         self.model_name = self.generation_params.engine
         self.api_address = f"http://{host}:{port}"
         self.chat = chat
+        if (
+            not self.chat
+            and "chat" in self.generation_params
+            and self.generation_params.chat
+        ):
+            self.chat = True
+
+        # reasoning_effort: None → omit from payload (use server default)
+        # Valid values: "low", "medium", "high"
+        self.reasoning_effort = None
+        if (
+            "reasoning_effort" in self.generation_params
+            and self.generation_params.reasoning_effort is not None
+        ):
+            re_val = str(self.generation_params.reasoning_effort).lower()
+            if re_val not in ("low", "medium", "high"):
+                raise ValueError(
+                    f"reasoning_effort must be 'low', 'medium', 'high', or null. Got: '{re_val}'"
+                )
+            self.reasoning_effort = re_val
 
     def generate(
         self,
@@ -49,12 +69,14 @@ class RemoteLanguageModel:
         :return: A dictionary with the generated text (e.g., {"generation": "generated text"}).
         """
         if self.chat:
-            raise NotImplementedError("Chat not implemented yet")
             return self.batch_chat_generate(
-                [prompt], stop, max_new_tokens, generation_args=generation_args
+                [prompt],
+                stop,
+                max_length=max_new_tokens,
+                generation_args=generation_args,
             )[0]
         return self.batch_generate(
-            [prompt], max_new_tokens, generation_args=generation_args  # type: ignore[arg-type]
+            [prompt], max_length=max_new_tokens, generation_args=generation_args  # type: ignore[arg-type]
         )[0]
 
     def batch_generate(
@@ -89,6 +111,8 @@ class RemoteLanguageModel:
                     "temperature": 0.0,
                     "n": 1,
                 }
+                if self.reasoning_effort is not None:
+                    payload["reasoning_effort"] = self.reasoning_effort
                 # if generation_args:
                 #     payload.update(generation_args)
                 response = requests.post(url, headers=headers, json=payload, timeout=40)
@@ -122,16 +146,81 @@ class RemoteLanguageModel:
         headers = {"Content-Type": "application/json"}
         results = []
         url = f"{self.api_address}/v1/chat/completions"
+        # GPT-style chat message tags (openai/harmony)
+        system_tag: str = getattr(self, "system_tag", "<|start|>system<|message|>")
+        user_tag: str = getattr(self, "user_tag", "<|start|>user<|message|>")
+        assistant_tag: str = getattr(
+            self, "assistant_tag", "<|start|>assistant<|message|>"
+        )
+        eot_tag: str = getattr(self, "eot_tag", "<|end|>")
         try:
             for prompt in prompts:
+                messages = []
+
+                parts = prompt.split(eot_tag)
+                if parts and (not parts[-1] or parts[-1].isspace()):
+                    parts = parts[:-1]
+
+                if not parts:
+                    raise ValueError("Prompt not formatted correctly for chat")
+
+                # Heuristic to check if the prompt is tagged or not
+                is_tagged = (
+                    parts[0].strip().startswith((system_tag, user_tag, assistant_tag))
+                )
+
+                if is_tagged:
+                    tag_map = {
+                        system_tag: "system",
+                        user_tag: "user",
+                        assistant_tag: "assistant",
+                    }
+                    for part in parts:
+                        part = part.strip()
+                        if not part:
+                            continue
+
+                        found_role = False
+                        for tag, role in tag_map.items():
+                            if part.startswith(tag):
+                                content = part[len(tag) :].strip()
+                                messages.append({"role": role, "content": content})
+                                found_role = True
+                                break
+
+                        if not found_role:
+                            raise ValueError(
+                                f"Malformed tagged chat prompt. Part: {part[:100]}"
+                            )
+                else:
+                    # Fallback to old logic for untagged prompts
+                    if len(parts) == 1:
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": "You are an expert at task planning.",
+                            }
+                        )
+                        messages.append({"role": "user", "content": parts[0]})
+                    else:
+                        messages.append({"role": "system", "content": parts[0]})
+                        roles = ["user", "assistant"]
+                        for i, message_content in enumerate(parts[1:]):
+                            messages.append(
+                                {"role": roles[i % 2], "content": message_content}
+                            )
+                if not messages:
+                    raise ValueError("Could not parse any messages from the prompt.")
+
                 payload = {
                     "model": self.model_name,
-                    # TODO system prompt should be separate.
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "max_tokens": max_length,
                     "temperature": 0.0,
                     "n": 1,
                 }
+                if self.reasoning_effort is not None:
+                    payload["reasoning_effort"] = self.reasoning_effort
                 if generation_args:
                     payload.update(generation_args)
                 response = requests.post(url, headers=headers, json=payload, timeout=40)
@@ -139,7 +228,7 @@ class RemoteLanguageModel:
                 result = response.json()
                 generated_text = result["choices"][0]["message"]["content"]
                 results.append({"generation": generated_text})
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             results.append({"generation": f"Error calling remote model: {e}"})
 
         return results
