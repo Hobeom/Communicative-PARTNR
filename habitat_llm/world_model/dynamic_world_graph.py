@@ -870,6 +870,9 @@ class DynamicWorldGraph(WorldGraph):
             self._logger.debug(
                 f"{agent_uid=}: {high_level_action=}, {action_response=}"
             )
+            if "sendmessage" in high_level_action[0].lower():
+                # do not update world graph for sendmessage actions
+                return
             agent_node = self.get_node_from_name(f"agent_{agent_uid}")
             if (
                 "place" in high_level_action[0].lower()

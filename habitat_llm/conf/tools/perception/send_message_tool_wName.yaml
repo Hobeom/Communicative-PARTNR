@@ -8,3 +8,6 @@ send_message_tool:
     prompt: Message_Gen # Not used for message generation
     speech_recognition_range: 0.0
     system_feedback_mode: 'Binary' # Opaque, Binary, Causal, Traceable
+    name_mapping:
+      "0": "Spot"
+      "1": "Alice"

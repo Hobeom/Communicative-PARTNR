@@ -162,6 +162,9 @@ class EnvironmentInterface:
         self._directed_messages[receiver_id].append(
             {"count": self._message_count, "sender": sender_id, "message": message}
         )
+        print(
+            f"[DEBUG] Agent {sender_id} sent directed message to Agent {receiver_id}: {message}"
+        )
 
     def get_new_messages(self, receiver_id: int):
         """

@@ -17,4 +17,4 @@ plan_config:
     rag_dataset_dir: "" # The path to the rag_data_source_name folder
     rag_data_source_name: "" # rag_data_source_name folder itself
     example_type: "react" # The prompting format
-    wake_up: False # True if we want to wake up the agent by message from the other agent
+    wake_up: True # True if we want to wake up the agent by message from the other agent

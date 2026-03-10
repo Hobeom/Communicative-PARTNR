@@ -55,6 +55,14 @@ class SendMessageTool(PerceptionTool):
         if self.speech_recognition_range == 0:
             self.speech_recognition_range = float("inf")
 
+        self.name_mapping = self.skill_config.get("name_mapping", {})
+        if self.name_mapping == {}:
+            self.use_names = False
+        else:
+            self.use_names = True
+            self.name_mapping = {int(k): v for k, v in self.name_mapping.items()}
+            # self.name_mapping = {0: "Spot", 1: "Alice"}
+
     def to(self, device: str):
         return self
 
@@ -137,6 +145,8 @@ class SendMessageTool(PerceptionTool):
         if self.response_success_state:
             agents = [
                 f"Agent {uid}"
+                if not self.use_names
+                else self.name_mapping.get(uid, f"Agent {uid}")
                 for uid, info in recipient_info.items()
                 if info["message_delivered"]
             ]

@@ -12,8 +12,22 @@ from typing import Any, DefaultDict, Dict, List, Tuple
 import cv2
 import imageio
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from habitat_llm.agent.env import EnvironmentInterface
+
+
+def pil_get_font(size: int):
+    for p in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]:
+        try:
+            return ImageFont.truetype(p, size=size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 
 class DebugVideoUtil:
@@ -93,68 +107,207 @@ class DebugVideoUtil:
         :param hl_actions: A dict mapping agent action indices to actions.
         """
         frames_concat = self.__get_combined_frames(observations)
-        frames_concat = np.ascontiguousarray(frames_concat)
+        frames_concat = np.ascontiguousarray(frames_concat).copy()
+        H, W = frames_concat.shape[:2]
+
+        pil_img = Image.fromarray(frames_concat).convert("RGBA")
+        draw = ImageDraw.Draw(pil_img)
+        font = pil_get_font(22)
+        white = (255, 255, 255, 255)
+
+        def normalize_for_draw(s: str) -> str:
+            s = (
+                s.replace("\\'", "'")
+                .replace('\\"', '"')
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+            )
+            replacements = {
+                "\u2018": "'",
+                "\u2019": "'",
+                "\u201B": "'",
+                "\u2032": "'",
+                "\u201C": '"',
+                "\u201D": '"',
+                "\u2033": '"',
+                "\u2013": "-",
+                "\u2014": "-",
+                "\u2212": "-",
+                "\u00A0": " ",
+                "\u2026": "...",
+            }
+            for k, v in replacements.items():
+                s = s.replace(k, v)
+            return s
+
+        def text_size(text: str) -> tuple[int, int]:
+            l, t, r, b = draw.textbbox((0, 0), text, font=font)
+            return r - l, b - t
+
+        def format_action_text(action: tuple, prev_action=None) -> str:
+            """
+            Returns a readable text like:
+            'Explore the room kitchen_1 (prev: Navigate to hallway_1)'
+            """
+            if not action or not isinstance(action, (tuple, list)):
+                return str(action)
+
+            name = action[0]
+            args: List[Any] = []
+            for a in action[1:]:
+                if isinstance(a, (tuple, list)):
+                    args.extend(x for x in a if x not in (None, "", "None"))
+                elif a not in (None, "", "None"):
+                    args.append(a)
+
+            def fmt(name, args):
+                templates = {
+                    "Clean": lambda a: f"Clean {a[0]}" if a else "Clean",
+                    "Close": lambda a: f"Close {a[0]}" if a else "Close something",
+                    "Explore": lambda a: f"Explore the room {a[0]}"
+                    if a
+                    else "Explore a room",
+                    "Fill": lambda a: f"Fill {a[0]}" if a else "Fill something",
+                    "Navigate": lambda a: f"Navigate to {a[0]}" if a else "Navigate",
+                    "Open": lambda a: f"Open {a[0]}" if a else "Open something",
+                    "Pick": lambda a: f"Pick up {a[0]}" if a else "Pick up something",
+                    "Place": lambda a: (
+                        f"Place {a[0]} {a[1]} {a[2]}"
+                        if len(a) >= 3
+                        else f"Place {a[0]}"
+                    ),
+                    "Pour": lambda a: f"Pour into {a[0]}" if a else "Pour",
+                    "PowerOff": lambda a: f"Turn off {a[0]}" if a else "Turn off",
+                    "PowerOn": lambda a: f"Turn on {a[0]}" if a else "Turn on",
+                    "Rearrange": lambda a: (
+                        f"Rearrange {a[0]} {a[1]} {a[2]}"
+                        if len(a) >= 3
+                        else f"Rearrange {a[0]}"
+                    ),
+                    "SendMessageTool": lambda a: "Send message",
+                    "Wait": lambda a: "Wait",
+                    "Done": lambda a: "Done",
+                }
+                if name in templates:
+                    try:
+                        return templates[name](args)
+                    except Exception:
+                        return f"{name} " + " ".join(args)
+                return f"{name} " + " ".join(args)
+
+            current_text = fmt(name, args)
+
+            if prev_action and isinstance(prev_action, (tuple, list)):
+                prev_name = prev_action[0]
+                prev_args = [a for a in prev_action[1:] if a not in (None, "", "None")]
+                prev_text = fmt(prev_name, prev_args)
+                current_text += f" (prev: {prev_text})"
+
+            return current_text
 
         for idx, action in hl_actions.items():
-            agent_name = "Human" if str(idx) == "1" else "Robot"
-            if len(self.previous_action[idx]) > 1:
-                text = f"{agent_name}: {action[0]}[{action[1]}] (prev: {self.previous_action[idx][-2][0]}[{self.previous_action[idx][-2][1]}])"
-            else:
-                text = f"{agent_name}: {action[0]}[{action[1]}]"
-            frames_concat = cv2.putText(
-                frames_concat,
-                text,
-                (20, (int(idx) + 1) * 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (255, 255, 255),
-                2,
-            )
-            if not self.previous_action[idx]:
+            if not action:
+                continue
+            name = action[0] if isinstance(action, (tuple, list)) and action else None
+            if name in (None, "", "None", "SyntaxError"):
+                continue
+            if name == "SendMessageTool":
+                if len(action) > 1 and action[1] not in (None, "", "None"):
+                    self.dialogue[idx].append(action[1])
+                if (
+                    not self.previous_action[idx]
+                    or self.previous_action[idx][-1] != action
+                ):
+                    self.previous_action[idx].append(action)
+                continue
+            if not self.previous_action[idx] or self.previous_action[idx][-1] != action:
                 self.previous_action[idx].append(action)
-            elif action[0] == "SendMessageTool":
-                self.dialogue[idx].append(action[1])
-            elif self.previous_action[idx][-1] != action:
-                self.previous_action[idx].append(action)
-            elif action[0] == "Done":
-                pass
 
-        for idx, msgs in self.dialogue.items():
-            if not msgs:
+        for idx in range(self.num_agents):
+            if not self.previous_action[idx]:
                 continue
             agent_name = "Human" if str(idx) == "1" else "Robot"
-            count = len(msgs)
-            latest_msg = msgs[-1]
-            text = f'{agent_name}[{count}]: "{latest_msg}"'
-            cv2.putText(
-                frames_concat,
-                text,
-                (20, (int(idx)) * 50 + 400),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (255, 255, 255),
-                2,
+            last_action = self.previous_action[idx][-1]
+            prev_action = (
+                self.previous_action[idx][-2]
+                if len(self.previous_action[idx]) > 1
+                else None
+            )
+            readable = format_action_text(last_action, prev_action)
+            text = f"{agent_name}: {readable}"
+            draw.text(
+                (20, (int(idx) + 1) * 50),
+                normalize_for_draw(text),
+                fill=white,
+                font=font,
             )
 
-        # After Done
-        if len(hl_actions) < self.num_agents:
-            for idx in range(self.num_agents):
-                if idx not in hl_actions:
-                    agent_name = "Human" if str(idx) == "1" else "Robot"
-                    if len(self.previous_action[idx]) > 0:
-                        text = f"{agent_name}: Done, {self.previous_action[idx][-1][0]}[{self.previous_action[idx][-1][1]}]"
-                    else:
-                        text = f"{agent_name}: Done"
-                    frames_concat = cv2.putText(
-                        frames_concat,
-                        text,
-                        (20, (int(idx) + 1) * 50),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.75,
-                        (255, 255, 255),
-                        2,
-                    )
+        col_margin = 20
+        col_w = W // 2 - col_margin * 2
+        line_gap = 8
+        box_h = int(H * 0.28)
+        base_y = H - box_h + 30
 
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rectangle(
+            (0, H - box_h, W, H), fill=(0, 0, 0, int(255 * 0.35))
+        )
+        pil_img = Image.alpha_composite(pil_img, overlay)
+        draw = ImageDraw.Draw(pil_img)
+
+        def place_message(
+            header: str, msg: str, x_left: int, base_y: int, max_col_w: int
+        ):
+            header = normalize_for_draw(header)
+            msg = normalize_for_draw(msg)
+
+            draw.text((x_left, base_y), header, fill=white, font=font)
+            hd_w, hd_h = text_size(header)
+
+            first_line_x = x_left + hd_w + 8
+            indent_px = 28
+            max_text_width = max_col_w - (first_line_x - x_left)
+
+            words = msg.split(" ")
+            cur = ""
+            lines = []
+            for w in words:
+                test = w if not cur else cur + " " + w
+                tw, th = text_size(test)
+                if tw <= max_text_width:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = w
+            if cur:
+                lines.append(cur)
+
+            last_y = base_y
+            for i, line in enumerate(lines):
+                x = first_line_x if i == 0 else x_left + indent_px
+                draw.text((x, last_y), line, fill=white, font=font)
+                _, th = text_size(line)
+                last_y += th + line_gap
+            return last_y
+
+        robot_msgs = self.dialogue.get(0, []) or self.dialogue.get(2, [])
+        if robot_msgs:
+            latest_msg = robot_msgs[-1]
+            count = len(robot_msgs)
+            place_message(f"Robot[{count}]:", latest_msg, col_margin, base_y, col_w)
+
+        human_msgs = self.dialogue.get(1, [])
+        if human_msgs:
+            latest_msg = human_msgs[-1]
+            count = len(human_msgs)
+            place_message(
+                f"Human[{count}]:", latest_msg, W // 2 + col_margin, base_y, col_w
+            )
+
+        pil_img = pil_img.convert("RGB")
+        frames_concat = np.asarray(pil_img)
+        frames_concat = np.ascontiguousarray(frames_concat).copy()
         self.frames.append(frames_concat)
         return
 
